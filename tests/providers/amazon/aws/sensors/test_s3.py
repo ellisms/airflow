@@ -320,6 +320,14 @@ class TestS3KeySensor:
         )
         assert op.poke(None) is False
 
+        op = S3KeySensor(
+            task_id="test-metadata",
+            bucket_key="test-key",
+            bucket_name="test-bucket",
+            check_fn=check_fn,
+        )
+        assert op.poke(None) is True
+
     @mock_aws
     def test_custom_metadata_default_custom_vals(self):
         def check_fn(files: list) -> bool:
