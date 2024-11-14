@@ -406,7 +406,6 @@ class DmsCreateReplicationConfigOperator(AwsBaseOperator[DmsHook]):
 
 class DmsDeleteReplicationConfigOperator(AwsBaseOperator[DmsHook]):
     """
-
     Deletes an AWS DMS Serverless replication configuration.
 
     .. seealso::
