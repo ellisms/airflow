@@ -19,7 +19,7 @@
 import { Heading, Link, VStack } from "@chakra-ui/react";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { TFunction } from "i18next";
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { Link as RouterLink, useParams, useSearchParams } from "react-router-dom";
 
@@ -32,6 +32,7 @@ import { StateBadge } from "src/components/StateBadge";
 import Time from "src/components/Time";
 import { TruncatedText } from "src/components/TruncatedText";
 import { SearchParamsKeys, type SearchParamsKeysType } from "src/constants/searchParams";
+import { useAutoRefresh } from "src/utils";
 import { getHITLState } from "src/utils/hitl";
 import { getTaskInstanceLink } from "src/utils/links";
 
@@ -176,6 +177,8 @@ export const HITLTaskInstances = () => {
   const [sort] = sorting;
   const responseReceived = searchParams.get(RESPONSE_RECEIVED_PARAM);
 
+  const baseRefetchInterval = useAutoRefresh({});
+
   const bodySearch = searchParams.get(BODY_SEARCH) ?? undefined;
   const createdAtGte = searchParams.get(CREATED_AT_GTE) ?? undefined;
   const createdAtLte = searchParams.get(CREATED_AT_LTE) ?? undefined;
@@ -189,27 +192,44 @@ export const HITLTaskInstances = () => {
   // Use the filter value if available, otherwise fall back to the old responseReceived param
   const effectiveResponseReceived = filterResponseReceived ?? responseReceived;
 
-  const { data, error, isLoading } = useTaskInstanceServiceGetHitlDetails({
-    bodySearch,
-    createdAtGte,
-    createdAtLte,
-    dagId: dagId ?? "~",
-    dagIdPattern,
-    dagRunId: runId ?? "~",
-    limit: pagination.pageSize,
-    mapIndex: parseInt(mapIndex, 10),
-    offset: pagination.pageIndex * pagination.pageSize,
-    orderBy: sort ? [`${sort.desc ? "-" : ""}${sort.id}`] : [],
-    respondedByUserName: respondedByUserName === undefined ? undefined : [respondedByUserName],
-    responseReceived:
-      Boolean(effectiveResponseReceived) && effectiveResponseReceived !== "all"
-        ? effectiveResponseReceived === "true"
-        : undefined,
-    state: effectiveResponseReceived === "false" ? ["deferred"] : undefined,
-    subjectSearch,
-    taskId,
-    taskIdPattern,
-  });
+  const { data, error, isLoading } = useTaskInstanceServiceGetHitlDetails(
+    {
+      bodySearch,
+      createdAtGte,
+      createdAtLte,
+      dagId: dagId ?? "~",
+      dagIdPattern,
+      dagRunId: runId ?? "~",
+      limit: pagination.pageSize,
+      mapIndex: parseInt(mapIndex, 10),
+      offset: pagination.pageIndex * pagination.pageSize,
+      orderBy: sort ? [`${sort.desc ? "-" : ""}${sort.id}`] : [],
+      respondedByUserName: respondedByUserName === undefined ? undefined : [respondedByUserName],
+      responseReceived:
+        Boolean(effectiveResponseReceived) && effectiveResponseReceived !== "all"
+          ? effectiveResponseReceived === "true"
+          : undefined,
+      state: effectiveResponseReceived === "false" ? ["deferred"] : undefined,
+      subjectSearch,
+      taskId,
+      taskIdPattern,
+    },
+    undefined,
+    {
+      // Only continue auto-refetching when filtering for unreceived responses
+      // and at least one TaskInstance is still deferred without a response.
+      refetchInterval: (query) => {
+        const hasDeferredWithoutResponse = Boolean(
+          query.state.data?.hitl_details.some(
+            (detail: HITLDetail) =>
+              detail.responded_at === undefined && detail.task_instance.state === "deferred",
+          ),
+        );
+
+        return hasDeferredWithoutResponse ? baseRefetchInterval : false;
+      },
+    },
+  );
 
   const handleResponseChange = useCallback(() => {
     setTableURLState({
@@ -220,6 +240,17 @@ export const HITLTaskInstances = () => {
     setSearchParams(searchParams);
   }, [pagination, searchParams, setSearchParams, setTableURLState, sorting]);
 
+  const columns = useMemo(
+    () =>
+      taskInstanceColumns({
+        dagId,
+        runId,
+        taskId,
+        translate,
+      }),
+    [dagId, runId, taskId, translate],
+  );
+
   return (
     <VStack align="start">
       {!Boolean(dagId) && !Boolean(runId) && !Boolean(taskId) ? (
@@ -229,12 +260,7 @@ export const HITLTaskInstances = () => {
       ) : undefined}
       <HITLFilters onResponseChange={handleResponseChange} />
       <DataTable
-        columns={taskInstanceColumns({
-          dagId,
-          runId,
-          taskId,
-          translate,
-        })}
+        columns={columns}
         data={data?.hitl_details ?? []}
         errorMessage={<ErrorAlert error={error} />}
         initialState={tableURLState}

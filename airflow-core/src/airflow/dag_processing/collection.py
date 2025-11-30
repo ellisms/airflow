@@ -28,7 +28,7 @@ This should generally only be called by internal methods such as
 from __future__ import annotations
 
 import traceback
-from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar
+from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar, cast
 
 import structlog
 from sqlalchemy import delete, func, insert, select, tuple_, update
@@ -139,7 +139,7 @@ class _RunInfo(NamedTuple):
     @classmethod
     def calculate(cls, dags: dict[str, LazyDeserializedDAG], *, session: Session) -> Self:
         """
-        Query the the run counts from the db.
+        Query the run counts from the db.
 
         :param dags: dict of dags to query
         """
@@ -159,10 +159,32 @@ class _RunInfo(NamedTuple):
 
 def _update_dag_tags(tag_names: set[str], dm: DagModel, *, session: Session) -> None:
     orm_tags = {t.name: t for t in dm.tags}
+    tags_to_delete = []
     for name, orm_tag in orm_tags.items():
         if name not in tag_names:
             session.delete(orm_tag)
-    dm.tags.extend(DagTag(name=name, dag_id=dm.dag_id) for name in tag_names.difference(orm_tags))
+            tags_to_delete.append(orm_tag)
+
+    tags_to_add = tag_names.difference(orm_tags)
+    if tags_to_delete:
+        # Remove deleted tags from the collection to keep it in sync
+        for tag in tags_to_delete:
+            dm.tags.remove(tag)
+
+        # Check if there's a potential case-only rename on MySQL (e.g., 'tag' -> 'TAG').
+        # MySQL uses case-insensitive collation for the (name, dag_id) primary key by default,
+        # which can cause duplicate key errors when renaming tags with only case changes.
+        if get_dialect_name(session) == "mysql":
+            orm_tags_lower = {name.lower(): name for name in orm_tags}
+            has_case_only_change = any(tag.lower() in orm_tags_lower for tag in tags_to_add)
+
+            if has_case_only_change:
+                # Force DELETE operations to execute before INSERT operations.
+                session.flush()
+                # Refresh the tags relationship from the database to reflect the deletions.
+                session.expire(dm, ["tags"])
+
+    dm.tags.extend(DagTag(name=name, dag_id=dm.dag_id) for name in tags_to_add)
 
 
 def _update_dag_owner_links(dag_owner_links: dict[str, str], dm: DagModel, *, session: Session) -> None:
@@ -263,21 +285,22 @@ def _update_import_errors(
 ):
     from airflow.listeners.listener import get_listener_manager
 
-    # We can remove anything from files parsed in this batch that doesn't have an error. We need to remove old
-    # errors (i.e. from files that are removed) separately
-
-    session.execute(
-        delete(ParseImportError).where(
-            tuple_(ParseImportError.bundle_name, ParseImportError.filename).in_(files_parsed)
-        )
-    )
-
-    # the below query has to match (bundle_name, filename) tuple in that order since the
-    # import_errors list is a dict with keys as (bundle_name, relative_fileloc)
+    # Check existing import errors BEFORE deleting, so we can determine if we should update or create
     existing_import_error_files = set(
         session.execute(select(ParseImportError.bundle_name, ParseImportError.filename))
     )
-    # Add the errors of the processed files
+
+    # Delete errors for files that were parsed but don't have errors in import_errors
+    # (i.e., files that were successfully parsed without errors)
+    files_to_clear = files_parsed.difference(import_errors)
+    if files_to_clear:
+        session.execute(
+            delete(ParseImportError).where(
+                tuple_(ParseImportError.bundle_name, ParseImportError.filename).in_(files_to_clear)
+            )
+        )
+
+    # Add or update the errors of the processed files
     for key, stacktrace in import_errors.items():
         bundle_name_, relative_fileloc = key
 
@@ -349,6 +372,7 @@ def update_dag_parsing_results_in_db(
     session: Session,
     *,
     warning_types: tuple[DagWarningType] = (DagWarningType.NONEXISTENT_POOL,),
+    files_parsed: set[tuple[str, str]] | None = None,
 ):
     """
     Update everything to do with DAG parsing in the DB.
@@ -366,6 +390,10 @@ def update_dag_parsing_results_in_db(
     then all warnings and errors related to this file will be removed.
 
     ``import_errors`` will be updated in place with an new errors
+
+    :param files_parsed: Set of (bundle_name, relative_fileloc) tuples for all files that were parsed.
+        If None, will be inferred from dags and import_errors. Passing this explicitly ensures that
+        import errors are cleared for files that were parsed but no longer contain DAGs.
     """
     # Retry 'DAG.bulk_write_to_db' & 'SerializedDagModel.bulk_sync_to_db' in case
     # of any Operational Errors
@@ -401,16 +429,8 @@ def update_dag_parsing_results_in_db(
             import_errors.update(serialize_errors)
     # Record import errors into the ORM - we don't retry on this one as it's not as critical that it works
     try:
-        # TODO: This won't clear errors for files that exist that no longer contain DAGs. Do we need to pass
-        # in the list of file parsed?
-
-        good_dag_filelocs = {
-            (bundle_name, dag.relative_fileloc)
-            for dag in dags
-            if dag.relative_fileloc is not None and (bundle_name, dag.relative_fileloc) not in import_errors
-        }
         _update_import_errors(
-            files_parsed=good_dag_filelocs,
+            files_parsed=files_parsed if files_parsed is not None else set(),
             bundle_name=bundle_name,
             import_errors=import_errors,
             session=session,
@@ -444,7 +464,7 @@ class DagModelOperation(NamedTuple):
             .options(joinedload(DagModel.schedule_asset_alias_references))
             .options(joinedload(DagModel.task_outlet_asset_references))
         )
-        stmt = with_row_locks(stmt, of=DagModel, session=session)
+        stmt = cast("Select[tuple[DagModel]]", with_row_locks(stmt, of=DagModel, session=session))
         return {dm.dag_id: dm for dm in session.scalars(stmt).unique()}
 
     def add_dags(self, *, session: Session) -> dict[str, DagModel]:
@@ -615,8 +635,8 @@ def _get_dag_assets(
     inlets: bool = True,
     outlets: bool = True,
 ) -> Iterable[tuple[str, AssetT]]:
-    for task in dag.data["dag"]["tasks"]:
-        task = task[Encoding.VAR]
+    for raw_task in dag.data["dag"]["tasks"]:
+        task = raw_task[Encoding.VAR]
         ports = _get_task_ports(task["partial_kwargs"] if task.get("_is_mapped") else task, inlets, outlets)
         for port in ports:
             if isinstance(obj := BaseSerialization.deserialize(port), of):

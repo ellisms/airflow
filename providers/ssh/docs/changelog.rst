@@ -27,6 +27,42 @@
 Changelog
 ---------
 
+4.2.0
+.....
+
+.. note::
+    This release of provider is only available for Airflow 2.11+ as explained in the
+    Apache Airflow providers support policy <https://github.com/apache/airflow/blob/main/PROVIDERS.rst#minimum-supported-version-of-airflow-for-community-managed-providers>_.
+
+Misc
+~~~~
+
+* ``Move out some exceptions to TaskSDK (#54505)``
+* ``Bump minimum Airflow version in providers to Airflow 2.11.0 (#58612)``
+* ``Remove SDK reference for NOTSET in Airflow Core (#58258)``
+
+.. Below changes are excluded from the changelog. Move them to
+   appropriate section above if needed. Do not delete the lines(!):
+
+4.1.6
+.....
+
+Misc
+~~~~
+
+* ``Convert all airflow distributions to be compliant with ASF requirements (#58138)``
+
+Doc-only
+~~~~~~~~
+
+* ``[Doc] Fixing some typos and spelling errors (#57225)``
+* ``Fixing some typos and spelling errors (#57186)``
+
+.. Below changes are excluded from the changelog. Move them to
+   appropriate section above if needed. Do not delete the lines(!):
+   * ``Delete all unnecessary LICENSE Files (#58191)``
+   * ``Enable PT006 rule to ssh Provider test (#57929)``
+
 4.1.5
 .....
 
@@ -47,7 +83,7 @@ Doc-only
 
 .. Below changes are excluded from the changelog. Move them to
    appropriate section above if needed. Do not delete the lines(!):
-   * ``Enable PT001 rule to prvoider tests (#55935)``
+   * ``Enable PT001 rule to provider tests (#55935)``
 
 4.1.4
 .....
@@ -713,7 +749,7 @@ Bug Fixes
    * ``Updated documentation for June 2021 provider release (#16294)``
    * ``Add Connection Documentation to more Providers (#15408)``
    * ``More documentation update for June providers release (#16405)``
-   * ``Synchronizes updated changelog after buggfix release (#16464)``
+   * ``Synchronizes updated changelog after bugfix release (#16464)``
 
 1.3.0
 .....

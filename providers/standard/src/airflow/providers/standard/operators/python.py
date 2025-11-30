@@ -45,18 +45,20 @@ from airflow.exceptions import (
     AirflowConfigException,
     AirflowException,
     AirflowProviderDeprecationWarning,
-    AirflowSkipException,
     DeserializingResultError,
 )
 from airflow.models.variable import Variable
-from airflow.providers.common.compat.sdk import context_merge
+from airflow.providers.common.compat.sdk import AirflowSkipException, context_merge
 from airflow.providers.standard.hooks.package_index import PackageIndexHook
-from airflow.providers.standard.utils.python_virtualenv import prepare_virtualenv, write_python_script
+from airflow.providers.standard.utils.python_virtualenv import (
+    _execute_in_subprocess,
+    prepare_virtualenv,
+    write_python_script,
+)
 from airflow.providers.standard.version_compat import AIRFLOW_V_3_0_PLUS, BaseOperator
 from airflow.utils import hashlib_wrapper
 from airflow.utils.file import get_unique_dag_module_name
 from airflow.utils.operator_helpers import KeywordParameters
-from airflow.utils.process_utils import execute_in_subprocess
 
 if AIRFLOW_V_3_0_PLUS:
     from airflow.providers.standard.operators.branch import BaseBranchOperator
@@ -559,6 +561,8 @@ class _BasePythonVirtualenvOperator(PythonOperator, metaclass=ABCMeta):
             )
 
             env_vars = dict(os.environ) if self.inherit_env else {}
+            if fd := os.getenv("__AIRFLOW_SUPERVISOR_FD"):
+                env_vars["__AIRFLOW_SUPERVISOR_FD"] = fd
             if self.env_vars:
                 env_vars.update(self.env_vars)
 
@@ -572,7 +576,7 @@ class _BasePythonVirtualenvOperator(PythonOperator, metaclass=ABCMeta):
                     os.fspath(termination_log_path),
                     os.fspath(airflow_context_path),
                 ]
-                execute_in_subprocess(
+                _execute_in_subprocess(
                     cmd=cmd,
                     env=env_vars,
                 )
